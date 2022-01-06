@@ -1,0 +1,858 @@
+/*****************************************************
+
+Project : Oxímetro v4
+Version : 
+Date    : 16/08/2021
+Author  : J&L Technologies
+Company : 
+Comments: 
+
+
+Chip type               : ATmega128A
+Program type            : Application
+AVR Core Clock frequency: 7.372800 MHz
+Memory model            : Small
+External RAM size       : 0
+Data Stack size         : 1024
+*****************************************************/
+
+//***********************************************
+//*                 LIBRERIAS                   *
+//***********************************************
+
+#include <mega128a.h>
+#include <stdio.h>
+#include <delay.h>
+#include <glcd.h>
+#include <font5x7.h>
+#include <stdlib.h>
+#include <string.h>
+
+//***********************************************
+//*                  DEFINES                    *
+//***********************************************
+#define MAX_VECTOR 600
+#define TIEMPO_MUESTREO 15
+#define ENTER   13
+#define ERROR_SENSOR_NO_CONECTADO 50
+#define ERROR_TIEMPO_SENSOR_NO_CONECTADO   30
+#define ADC_VREF_TYPE 0x40
+#define ADC_CALIBRATION_VCD 512
+#define CICLOS_MUESTREO_TIMER 10
+#define ERROR_OFFSET_FREC   12
+#define ERROR_OFFSET_VOLT  10
+
+//***********************************************
+//*             VARIABLES GLOBALES              *
+//***********************************************
+bit BIT_HABILITAR_MUESTREO=0;
+bit BIT_CALIBRACION_ENABLE=0;
+int INT_MUESTREO_INFRAROJO[MAX_VECTOR],INT_MUESTREO_ROJO[MAX_VECTOR];
+int INT_AUX, INT_X, INT_Y, INT_I;
+int INT_MAX_IR, INT_MIN_IR, INT_MAX_R, INT_MIN_R;
+int INT_CONTADOR_MUESTREO=0;
+int INT_SELECTOR_LED=0;
+int INT_CONTADOR_MUESTREO_RE=0;
+int INT_CONTADOR_MUESTREO_IR=0;
+int INT_CONTADOR_CALIBRACION_IR=0; 
+int INT_MAX_FREC=0;
+int INT_MIN_FREC=0;
+int INT_FRECUENCIA=0;
+int INT_I_MAX_IR=0;
+long int LINT_FRECUENCIA=0;  // Este valor contara ciclos de timer
+float FLOAT_AUX=0;
+float FLOAT_OXIGENACION=0;
+char STRING_OXIGENACION[]="98.90";
+char STRING_FRECUENCIA[]="098.90";
+char STRING_AUX_SERIAL[]="[500,1024,1024]";
+char STRING_AUX_SERIAL_FULL[]="[500,1024,1024]";
+char STRING_BT_FLAG;
+char STRING_BT_STATUS[]="00";
+
+flash int INT_VALORES_FRECUENCIA[301]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,240,235,231,226,222,218,214,211,207,203,200,197,194,190,188,185,182,179,176,174,171,169,167,164,162,160,158,156,154,152,150,148,146,145,143,141,140,138,136,135,133,132,130,129,128,126,125,124,122,121,120,119,118,117,115,114,113,112,111,110,109,108,107,106,105,104,103,103,102,101,100,99,98,98,97,96,95,94,94,93,92,92,91,90,90,89,88,88,87,86,86,85,85,84,83,83,82,82,81,81,80,79,79,78,78,77,77,76,76,75,75,75,74,74,73,73,72,72,71,71,71,70,70,69,69,69,68,68,67,67,67,66,66,66,65,65,65,64,64,63,63,63,63,62,62,62,61,61,61,60,60,60,59,59,59,59,58,58,58,57,57,57,57,56,56,56,56,55,55,55,55,54,54,54,54,53,53,53,53,52,52,52,52,52,51,51,51,51,50,50,50,50,50,49,49,49,49,49,48,48,48,48,48,47,47,47,47,47,47,46,46,46,46,46,45,45,45,45,45,45,44,44,44,44,44,44,43,43,43,43,43,43,43,42,42,42,42,42,42,42,41,41,41,41,41,41,41,40,40,40,40,};
+
+//***********************************************
+//*          PROTOTIPOS DE FUNCIONES            *
+//***********************************************
+unsigned int read_adc(unsigned char adc_input);
+void FUN_LIMPIAR_VECTORES_ADC(void);
+void FUN_CONFIGURAR_HARDWARE(void);
+void FUN_RUTINA_ARRANQUE(void);
+void FUNC_TOMAR_MUESTREO_ADC(void);
+void FUN_DIBUJAR_CORAZON( int x, int y);
+void FUN_BORRAR_CORAZON( int x, int y);
+float FUN_LEER_OXIGENACION(void);
+int FUN_LEER_FRECUENCIA(void);
+
+
+
+// Timer1 output compare A interrupt service routine
+interrupt [TIM1_COMPA] void timer1_compa_isr(void)
+{
+    switch (INT_SELECTOR_LED)
+        {
+            case 0:      //Excito R
+                PORTD.1=0;
+                PORTD.0=1; 
+                if (BIT_HABILITAR_MUESTREO){INT_MUESTREO_INFRAROJO[INT_CONTADOR_MUESTREO_IR]=read_adc(0);INT_CONTADOR_MUESTREO_IR++;}
+                INT_PWM_AUX=INT_PWM_R;
+                OCR1BL=INT_PWM_AUX&(0x00ff);  //Preparo PWM para el Rojo
+                INT_PWM_AUX=INT_PWM_AUX>>8;
+                OCR1BH=INT_PWM_AUX&(0x00ff);
+                INT_SELECTOR_LED=1; 
+                break;
+            case 1:    //Excito IR
+                PORTD.0=0;
+                PORTD.1=1;  
+                if (BIT_HABILITAR_MUESTREO){INT_MUESTREO_ROJO[INT_CONTADOR_MUESTREO_RE]=read_adc(0);INT_CONTADOR_MUESTREO_RE++;} 
+                INT_PWM_AUX=INT_PWM_IR ;
+                OCR1BL=INT_PWM_AUX&(0x00ff); //Preparo PWM para el IRojo
+                INT_PWM_AUX=INT_PWM_AUX>>8;
+                OCR1BH=INT_PWM_AUX&(0x00ff);
+                INT_SELECTOR_LED=0; 
+                break;
+        }
+if(INT_CONTADOR_MUESTREO_RE==MAX_VECTOR){BIT_HABILITAR_MUESTREO=0;}
+
+}
+
+// Timer1 output compare B interrupt service routine
+interrupt [TIM1_COMPB] void timer1_compb_isr(void)
+{
+    switch (INT_SELECTOR_LED)
+        {
+            case 0:
+                PORTD.0=0;
+                PORTD.1=0; 
+                PORTD.4=1;
+                break;
+            case 1:
+                PORTD.1=0;
+                PORTD.0=0;
+                PORTD.4=0;
+                break; 
+        }
+
+}
+
+
+
+// Function used for reading image
+// data from external memory
+unsigned char read_ext_memory(GLCDMEMADDR_t addr)
+{
+unsigned char data;
+// Place your code here
+
+return data;
+}
+
+// Function used for writing image
+// data to external memory
+void write_ext_memory(GLCDMEMADDR_t addr, unsigned char data)
+{
+// Place your code here
+
+}
+
+#ifndef RXB8
+#define RXB8 1
+#endif
+
+#ifndef TXB8
+#define TXB8 0
+#endif
+
+#ifndef UPE
+#define UPE 2
+#endif
+
+#ifndef DOR
+#define DOR 3
+#endif
+
+#ifndef FE
+#define FE 4
+#endif
+
+#ifndef UDRE
+#define UDRE 5
+#endif
+
+#ifndef RXC
+#define RXC 7
+#endif
+
+#define FRAMING_ERROR (1<<FE)
+#define PARITY_ERROR (1<<UPE)
+#define DATA_OVERRUN (1<<DOR)
+#define DATA_REGISTER_EMPTY (1<<UDRE)
+#define RX_COMPLETE (1<<RXC)
+
+// USART0 Receiver buffer
+#define RX_BUFFER_SIZE0 8
+char rx_buffer0[RX_BUFFER_SIZE0];
+
+#if RX_BUFFER_SIZE0 <= 256
+unsigned char rx_wr_index0,rx_rd_index0,rx_counter0;
+#else
+unsigned int rx_wr_index0,rx_rd_index0,rx_counter0;
+#endif
+
+// This flag is set on USART0 Receiver buffer overflow
+bit rx_buffer_overflow0;
+
+// USART0 Receiver interrupt service routine
+interrupt [USART0_RXC] void usart0_rx_isr(void)
+{
+char status,data,local_char;
+status=UCSR0A;
+data=UDR0;
+if ((status & (FRAMING_ERROR | PARITY_ERROR | DATA_OVERRUN))==0)
+   {
+   rx_buffer0[rx_wr_index0++]=data;
+#if RX_BUFFER_SIZE0 == 256
+   // special case for receiver buffer size=256
+   if (++rx_counter0 == 0) rx_buffer_overflow0=1;
+#else
+   if (rx_wr_index0 == RX_BUFFER_SIZE0) rx_wr_index0=0;
+   if (++rx_counter0 == RX_BUFFER_SIZE0)
+      {
+      rx_counter0=0;
+      rx_buffer_overflow0=1;
+      }
+#endif
+   }
+local_char=getchar();    //Si recibe un "1", indica que se deben enviar los datos por BT
+	if (local_char==49)
+	{
+		STRING_BT_FLAG=local_char;
+	}
+}
+
+#ifndef _DEBUG_TERMINAL_IO_
+// Get a character from the USART0 Receiver buffer
+#define _ALTERNATE_GETCHAR_
+#pragma used+
+char getchar(void)
+{
+char data;
+while (rx_counter0==0);
+data=rx_buffer0[rx_rd_index0++];
+#if RX_BUFFER_SIZE0 != 256
+if (rx_rd_index0 == RX_BUFFER_SIZE0) rx_rd_index0=0;
+#endif
+#asm("cli")
+--rx_counter0;
+#asm("sei")
+return data;
+}
+#pragma used-
+#endif
+
+
+
+#define ADC_VREF_TYPE 0x00
+
+// Read the AD conversion result
+unsigned int read_adc(unsigned char adc_input)
+{
+ADMUX=(adc_input & 0x1f) | (ADC_VREF_TYPE & 0xff);
+if (adc_input & 0x20) ADCSRB |= 0x08;
+else ADCSRB &= 0xf7;
+// Delay needed for the stabilization of the ADC input voltage
+delay_us(10);
+// Start the AD conversion
+ADCSRA|=0x40;
+// Wait for the AD conversion to complete
+while ((ADCSRA & 0x10)==0);
+ADCSRA|=0x10;
+return ADCW;
+}
+
+// Declare your global variables here
+
+void main(void)
+{
+FUN_CONFIGURAR_HARDWARE();
+FUN_RUTINA_ARRANQUE();
+delay_ms(2000);
+
+glcd_clear();
+glcd_moveto(25, 7);
+glcd_outtext("%");   
+glcd_moveto(70, 7);
+glcd_outtext("ppm"); 
+glcd_line(0,63,128,63); //Dibujo los ejes 
+glcd_line(0,20,0,63);
+glcd_line(128,20,128,63);
+glcd_line(0,20,128,20); 
+ 
+
+while (1)
+      {
+        //************ TOMA DE MEDICIONES ************ 
+        FUN_LIMPIAR_VECTORES_ADC();
+		FUNC_TOMAR_MUESTREO_ADC(); 
+        FLOAT_OXIGENACION=FUN_LEER_OXIGENACION();
+        INT_FRECUENCIA=FUN_LEER_FRECUENCIA();
+        
+        
+        
+        if ((FLOAT_OXIGENACION<100)&&(FLOAT_OXIGENACION>90))
+            {
+                sprintf(STRING_OXIGENACION,"%2.1f",FLOAT_OXIGENACION);
+            }   
+        if ((FLOAT_OXIGENACION>100)||(FLOAT_OXIGENACION<90))
+            {
+                strcpy(STRING_OXIGENACION,"---");
+            }      
+            
+        if ((INT_FRECUENCIA>49)&&(INT_FRECUENCIA<299))
+            {
+                INT_FRECUENCIA=INT_VALORES_FRECUENCIA[INT_FRECUENCIA];
+                sprintf(STRING_FRECUENCIA,"%d",INT_FRECUENCIA);
+            }
+        if ((INT_FRECUENCIA<49)||(INT_FRECUENCIA>299))
+            {
+                INT_FRECUENCIA=0;     
+                strcpy(STRING_FRECUENCIA,"---"); 
+            }                                        
+        
+		if (STRING_BT_FLAG!=49) //Muestro datos en Display
+		{			
+			//Presentación de Datos en Display 
+			if (INT_FRECUENCIA!=0)
+				{
+					glcd_clear();
+					glcd_moveto(25, 7);
+					glcd_outtext(STRING_OXIGENACION); 
+					glcd_outtext("%");   
+					glcd_moveto(70, 7);
+					glcd_outtext(STRING_FRECUENCIA);
+					glcd_outtext("ppm"); 
+					glcd_line(0,63,128,63); //Dibujo los ejes 
+					glcd_line(0,20,0,63);
+					glcd_line(128,20,128,63);
+					glcd_line(0,20,128,20); 
+					//Busco los máximos y mínimos para autoescala
+					INT_MIN_R=1024;
+					INT_MAX_R=0;
+					for (INT_I=50; INT_I<MAX_VECTOR; INT_I+=5)
+					{
+						if (INT_MAX_R<INT_MUESTREO_INFRAROJO[INT_I]) {INT_MAX_R=INT_MUESTREO_INFRAROJO[INT_I];} 
+						if (INT_MIN_R>INT_MUESTREO_INFRAROJO[INT_I]) {INT_MIN_R=INT_MUESTREO_INFRAROJO[INT_I];}
+					}
+					
+					//Posiciono para dibujar los Ejes
+					INT_X=3;
+					INT_Y=60; 
+					for (INT_I=0; INT_I<MAX_VECTOR; INT_I+=5)
+					{
+						INT_AUX = (INT_MUESTREO_INFRAROJO[INT_I]-INT_MIN_R)*41/(INT_MAX_R-INT_MIN_R);   
+						if (INT_AUX>42) {INT_AUX=42;}
+						glcd_setpixel(INT_X+(INT_I/5),INT_Y-INT_AUX+2); 				
+					}				 
+				}
+			
+			if (INT_FRECUENCIA==0)
+				{
+					glcd_clear();
+					glcd_moveto(15, 20);
+					glcd_outtext("Coloque el dedo");
+					glcd_moveto(15, 30);  
+					glcd_outtext("  o el sensor"); 
+				} 
+		}
+		
+		if (STRING_BT_FLAG==49) //Muestro datos por BT
+		{
+			if(INT_FRECUENCIA!=0)
+			{
+				puts("ID;ROJO;IROJO");
+				for (INT_I=0; INT_I<MAX_VECTOR; INT_I++) 
+				{
+					sprintf(STRING_AUX_SERIAL_FULL,"%d",INT_I); 
+					strcat(STRING_AUX_SERIAL_FULL,";");  
+					sprintf(STRING_AUX_SERIAL,"%d",INT_MUESTREO_ROJO[INT_I]); 
+					strcat(STRING_AUX_SERIAL_FULL,STRING_AUX_SERIAL);
+					strcat(STRING_AUX_SERIAL_FULL,";");
+					sprintf(STRING_AUX_SERIAL,"%d",INT_MUESTREO_INFRAROJO[INT_I]); 
+					strcat(STRING_AUX_SERIAL_FULL,STRING_AUX_SERIAL);
+					puts(STRING_AUX_SERIAL_FULL);
+				}  
+				
+				putchar(13);
+				strcpy(STRING_AUX_SERIAL_FULL,"MAX: ");
+				sprintf(STRING_AUX_SERIAL,"%d",INT_MAX_FREC); 
+				strcat(STRING_AUX_SERIAL_FULL,STRING_AUX_SERIAL);
+				strcat(STRING_AUX_SERIAL_FULL,", ");
+				strcat(STRING_AUX_SERIAL_FULL,"min: ");
+				sprintf(STRING_AUX_SERIAL,"%d",INT_MIN_FREC); 
+				strcat(STRING_AUX_SERIAL_FULL,STRING_AUX_SERIAL);
+				strcat(STRING_AUX_SERIAL_FULL,", ");
+				strcat(STRING_AUX_SERIAL_FULL,"DIF: "); 
+				sprintf(STRING_AUX_SERIAL,"%d",INT_MAX_FREC-INT_MIN_FREC);
+				strcat(STRING_AUX_SERIAL_FULL,STRING_AUX_SERIAL);
+				strcat(STRING_AUX_SERIAL_FULL,", OX I: "); 
+				sprintf(STRING_AUX_SERIAL,"%d",INT_I_MAX_IR);
+				strcat(STRING_AUX_SERIAL_FULL,STRING_AUX_SERIAL);
+				puts(STRING_AUX_SERIAL_FULL); 
+				
+		
+				strcpy(STRING_AUX_SERIAL_FULL,"SPO2: ");
+				strcat(STRING_AUX_SERIAL_FULL,STRING_OXIGENACION);
+				strcat(STRING_AUX_SERIAL_FULL,"%, Frec: ");
+				strcat(STRING_AUX_SERIAL_FULL,STRING_FRECUENCIA);
+				strcat(STRING_AUX_SERIAL_FULL,"ppm");
+				puts(STRING_AUX_SERIAL_FULL); 
+				putchar(13);
+			}
+			
+			if (INT_FRECUENCIA==0)
+			{
+				puts("SS-SD");	//Informa que no está el sensor conectado o que no hay dedo colocado en el sensor 
+			}
+		
+			puts("AT");		//Envío señal comando a BT para verificar que sigue la conexión establecida
+			STRING_BT_STATUS[1]=getchar();
+			STRING_BT_STATUS[0]=getchar();	//Recibo respuesta del módulo BT
+			if(!strncmp(STRING_BT_STATUS,"OK",2)) //Veo si recibo el string OK, la función strncmp devuelve 0 si los dos string son iguales
+			{
+				STRING_BT_FLAG=49;	//Sigo indicando en el flag de que la conexión con el BT esá establecida
+			}
+			
+			else	//Veo si no recibo el string OK, la función strncmp devuelve 0 si los dos string son iguales
+			{
+				STRING_BT_FLAG=0;	//Sigo indicando en el flag de que la conexión con el BT esá establecida
+			}
+		}
+		
+		
+        
+      }
+}
+
+
+//***********************************************
+//*                 FUNCIONES                   *
+//***********************************************
+
+void FUNC_TOMAR_MUESTREO_ADC(void)
+{
+  FUN_DIBUJAR_CORAZON(5,5);
+  BIT_HABILITAR_MUESTREO=1;
+  INT_CONTADOR_MUESTREO=0;
+  INT_SELECTOR_LED=0;
+  PORTD.3=1;  
+  INT_CONTADOR_MUESTREO_IR=0;
+  INT_CONTADOR_MUESTREO_RE=0;
+  do 
+  {}while (BIT_HABILITAR_MUESTREO); 
+  PORTD.3=0;
+  BIT_HABILITAR_MUESTREO=0; 
+  FUN_BORRAR_CORAZON(5,5);
+}
+
+float FUN_LEER_OXIGENACION(void)
+{
+    int LOCAL_INT_I_MAX_R=0;
+    int LOCAL_INT_I_MAX_IR=0; 
+    int LOCAL_INT_I_MIN_R=0;
+    int LOCAL_INT_I_MIN_IR=0;
+    float LOCAL_FLOAT_INTENSIDAD_ROJO, LOCAL_FLOAT_INTENSIDAD_INFRAROJO,LOCAL_FLOAT_SPO2;
+    INT_MAX_R=0;
+    INT_MIN_R=2000;
+    INT_MAX_IR=0,
+    INT_MIN_IR=2000;
+    
+    for (INT_I=0; INT_I<MAX_VECTOR; INT_I++)
+        {
+            if (INT_MUESTREO_ROJO[INT_I]>INT_MAX_R) {INT_MAX_R=INT_MUESTREO_ROJO[INT_I];LOCAL_INT_I_MAX_R=INT_I;} 
+            if (INT_MUESTREO_ROJO[INT_I]<INT_MIN_R) {INT_MIN_R=INT_MUESTREO_ROJO[INT_I];LOCAL_INT_I_MIN_R=INT_I;}
+            if (INT_MUESTREO_INFRAROJO[INT_I]>INT_MAX_IR) {INT_MAX_IR=INT_MUESTREO_INFRAROJO[INT_I];LOCAL_INT_I_MAX_IR=INT_I;} 
+            if (INT_MUESTREO_INFRAROJO[INT_I]<INT_MIN_IR) {INT_MIN_IR=INT_MUESTREO_INFRAROJO[INT_I];LOCAL_INT_I_MIN_IR=INT_I;}  
+        }
+   INT_I_MAX_IR=LOCAL_INT_I_MAX_IR;
+   LOCAL_FLOAT_INTENSIDAD_ROJO=INT_MUESTREO_ROJO[LOCAL_INT_I_MAX_IR];
+   LOCAL_FLOAT_INTENSIDAD_INFRAROJO=INT_MUESTREO_INFRAROJO[LOCAL_INT_I_MAX_IR];
+   LOCAL_FLOAT_SPO2=115-30*(LOCAL_FLOAT_INTENSIDAD_INFRAROJO)/(LOCAL_FLOAT_INTENSIDAD_INFRAROJO+LOCAL_FLOAT_INTENSIDAD_ROJO);
+   return  LOCAL_FLOAT_SPO2;               
+}
+ 
+int FUN_LEER_FRECUENCIA(void)
+{
+  int LOCAL_INT_FRECUENCIA_INT=0;  
+  int LOCAL_INT_PICO_MAX1=0;
+  int LOCAL_INT_PICO_MAX2=0; 
+  int LOCAL_INT_PICO_MIN1=2000;
+  int LOCAL_INT_PICO_MIN2=2000;
+  int LOCAL_INT_BUSCADOR=0;   //Si Buscador=1, Busco  primer máximo; Si Buscador=0, Busco mínimo; Si Buscador=2, Busco segundo máximo  
+  
+  //Comienzo nuevo método de medición de Frecuencia por màximos 
+  LOCAL_INT_BUSCADOR=0;
+ 
+ for (INT_I=30; INT_I<MAX_VECTOR; INT_I++)
+  {
+     switch (LOCAL_INT_BUSCADOR)
+     {
+        case 0:  //Busco primer mínimo
+            
+            if (((INT_MUESTREO_INFRAROJO[INT_I]+ERROR_OFFSET_VOLT<INT_MUESTREO_INFRAROJO[INT_I+ERROR_OFFSET_FREC])&&(INT_MUESTREO_INFRAROJO[INT_I]+ERROR_OFFSET_VOLT<INT_MUESTREO_INFRAROJO[INT_I+ERROR_OFFSET_FREC*2]))&&((INT_MUESTREO_INFRAROJO[INT_I]+ERROR_OFFSET_VOLT<INT_MUESTREO_INFRAROJO[INT_I-ERROR_OFFSET_FREC])&&(INT_MUESTREO_INFRAROJO[INT_I]+ERROR_OFFSET_VOLT<INT_MUESTREO_INFRAROJO[INT_I-ERROR_OFFSET_FREC*2])))
+             {
+                LOCAL_INT_PICO_MIN1=INT_I;
+                LOCAL_INT_BUSCADOR=1;
+                }                        
+            break;
+        
+        case 1: //Busco primer máxmo
+            if (((INT_MUESTREO_INFRAROJO[INT_I]>INT_MUESTREO_INFRAROJO[INT_I+ERROR_OFFSET_FREC])&&(INT_MUESTREO_INFRAROJO[INT_I]>INT_MUESTREO_INFRAROJO[INT_I+ERROR_OFFSET_FREC*2]))&&((INT_MUESTREO_INFRAROJO[INT_I]>INT_MUESTREO_INFRAROJO[INT_I-ERROR_OFFSET_FREC])&&(INT_MUESTREO_INFRAROJO[INT_I]>INT_MUESTREO_INFRAROJO[INT_I-ERROR_OFFSET_FREC*2])))
+            {
+                LOCAL_INT_PICO_MAX1=INT_I;
+                LOCAL_INT_BUSCADOR=2;
+                }                
+            break;
+            
+        case 2:  //Busco segundo mínimo
+            if (((INT_MUESTREO_INFRAROJO[INT_I]+ERROR_OFFSET_VOLT<INT_MUESTREO_INFRAROJO[INT_I+ERROR_OFFSET_FREC])&&(INT_MUESTREO_INFRAROJO[INT_I]+ERROR_OFFSET_VOLT<INT_MUESTREO_INFRAROJO[INT_I+ERROR_OFFSET_FREC*2]))&&((INT_MUESTREO_INFRAROJO[INT_I]+ERROR_OFFSET_VOLT<INT_MUESTREO_INFRAROJO[INT_I-ERROR_OFFSET_FREC])&&(INT_MUESTREO_INFRAROJO[INT_I]+ERROR_OFFSET_VOLT<INT_MUESTREO_INFRAROJO[INT_I-ERROR_OFFSET_FREC*2])))
+            {
+                LOCAL_INT_PICO_MIN2=INT_I;
+                LOCAL_INT_BUSCADOR=3;
+                }                        
+            break;
+            
+        case 3: //Busco segundo máxmo
+            if (((INT_MUESTREO_INFRAROJO[INT_I]>INT_MUESTREO_INFRAROJO[INT_I+ERROR_OFFSET_FREC])&&(INT_MUESTREO_INFRAROJO[INT_I]>INT_MUESTREO_INFRAROJO[INT_I+ERROR_OFFSET_FREC*2]))&&((INT_MUESTREO_INFRAROJO[INT_I]>INT_MUESTREO_INFRAROJO[INT_I-ERROR_OFFSET_FREC])&&(INT_MUESTREO_INFRAROJO[INT_I]>INT_MUESTREO_INFRAROJO[INT_I-ERROR_OFFSET_FREC*2])))
+            {
+                LOCAL_INT_PICO_MAX2=INT_I;
+                LOCAL_INT_BUSCADOR=4;
+                }            
+            break;
+             
+        default:
+            break;
+        }  
+     
+     if (LOCAL_INT_BUSCADOR==4){1;}
+  }
+    
+    INT_MAX_FREC=LOCAL_INT_PICO_MIN2;
+    INT_MIN_FREC=LOCAL_INT_PICO_MIN1;
+    LOCAL_INT_FRECUENCIA_INT=LOCAL_INT_PICO_MIN2-LOCAL_INT_PICO_MIN1;  
+  
+  return LOCAL_INT_FRECUENCIA_INT;
+}
+
+void FUN_LIMPIAR_VECTORES_ADC(void)
+{
+ sprintf(STRING_OXIGENACION,"%2.2f",0);   
+ sprintf(STRING_FRECUENCIA,"%2.2f",0);
+ LINT_FRECUENCIA=0; 
+ FLOAT_AUX=0;
+ for (INT_I=0; INT_I<MAX_VECTOR; INT_I++)
+    {
+     INT_MUESTREO_ROJO[INT_I]=0;
+     INT_MUESTREO_INFRAROJO[INT_I]=0;
+    }
+}
+
+void FUN_RUTINA_ARRANQUE(void)
+{
+  glcd_line(41,5,61,5);   
+  glcd_line(41,10,49,10); 
+  glcd_line(53,10,61,10);
+  glcd_line(41,5,41,10); 
+  glcd_line(61,5,61,10);
+  glcd_line(49,10,49,30);
+  glcd_line(53,10,53,30);  
+  glcd_arc(46, 30, 180, 360, 3);
+  glcd_line(41,30,43,30);
+  glcd_arc(47, 31, 180, 360, 6);  
+  
+  glcd_line(67,5,73,5); 
+  glcd_line(67,5,67,37);
+  glcd_line(67,37,87,37);
+  glcd_line(87,37,87,32); 
+  glcd_line(73,32,87,32);
+  glcd_line(73,5,73,32); 
+  
+  glcd_outtextxy(30, 45, "Technologies");
+
+}
+
+void FUN_DIBUJAR_CORAZON( int x, int y)
+{
+          
+          glcd_setpixel(x+3,y);
+          glcd_setpixel(x+4,y);
+          glcd_setpixel(x+5,y);
+          glcd_setpixel(x+11,y);
+          glcd_setpixel(x+12,y);
+          glcd_setpixel(x+13,y);
+          
+          glcd_setpixel(x+2,y+1);
+          glcd_setpixel(x+6,y+1);
+          glcd_setpixel(x+10,y+1);
+          glcd_setpixel(x+14,y+1);
+
+          glcd_setpixel(x+1,y+2);
+          glcd_setpixel(x+7,y+2);
+          glcd_setpixel(x+9,y+2);
+          glcd_setpixel(x+15,y+2);
+
+          glcd_setpixel(x,y+3);
+          glcd_setpixel(x+8,y+3);
+          glcd_setpixel(x+16,y+3);
+          
+          glcd_setpixel(x,y+4);
+          glcd_setpixel(x+16,y+4);
+          
+          glcd_setpixel(x,y+5);
+          glcd_setpixel(x+16,y+5);
+          
+          glcd_setpixel(x+1,y+6);
+          glcd_setpixel(x+15,y+6);
+          
+          glcd_setpixel(x+2,y+7);
+          glcd_setpixel(x+14,y+7);
+          
+          glcd_setpixel(x+3,y+8);
+          glcd_setpixel(x+13,y+8);
+          
+          glcd_setpixel(x+4,y+9);
+          glcd_setpixel(x+12,y+9);
+          
+          glcd_setpixel(x+5,y+10);
+          glcd_setpixel(x+11,y+10);
+          
+          glcd_setpixel(x+6,y+11);
+          glcd_setpixel(x+10,y+11);
+          
+          glcd_setpixel(x+7,y+12);
+          glcd_setpixel(x+9,y+12);
+          
+          glcd_setpixel(x+8,y+13);  
+          
+          }
+
+void FUN_BORRAR_CORAZON( int x, int y)
+{
+          
+          glcd_clrpixel(x+3,y);
+          glcd_clrpixel(x+4,y);
+          glcd_clrpixel(x+5,y);
+          glcd_clrpixel(x+11,y);
+          glcd_clrpixel(x+12,y);
+          glcd_clrpixel(x+13,y);
+          
+          glcd_clrpixel(x+2,y+1);
+          glcd_clrpixel(x+6,y+1);
+          glcd_clrpixel(x+10,y+1);
+          glcd_clrpixel(x+14,y+1);
+
+          glcd_clrpixel(x+1,y+2);
+          glcd_clrpixel(x+7,y+2);
+          glcd_clrpixel(x+9,y+2);
+          glcd_clrpixel(x+15,y+2);
+
+          glcd_clrpixel(x,y+3);
+          glcd_clrpixel(x+8,y+3);
+          glcd_clrpixel(x+16,y+3);
+          
+          glcd_clrpixel(x,y+4);
+          glcd_clrpixel(x+16,y+4);
+          
+          glcd_clrpixel(x,y+5);
+          glcd_clrpixel(x+16,y+5);
+          
+          glcd_clrpixel(x+1,y+6);
+          glcd_clrpixel(x+15,y+6);
+          
+          glcd_clrpixel(x+2,y+7);
+          glcd_clrpixel(x+14,y+7);
+          
+          glcd_clrpixel(x+3,y+8);
+          glcd_clrpixel(x+13,y+8);
+          
+          glcd_clrpixel(x+4,y+9);
+          glcd_clrpixel(x+12,y+9);
+          
+          glcd_clrpixel(x+5,y+10);
+          glcd_clrpixel(x+11,y+10);
+          
+          glcd_clrpixel(x+6,y+11);
+          glcd_clrpixel(x+10,y+11);
+          
+          glcd_clrpixel(x+7,y+12);
+          glcd_clrpixel(x+9,y+12);
+          
+          glcd_clrpixel(x+8,y+13);  
+          
+          }
+
+void FUN_CONFIGURAR_HARDWARE(void)
+{
+GLCDINIT_t glcd_init_data;
+#asm("cli");    //impido que llegue una interrupcion hasta que este configurado mi hardware
+// Crystal Oscillator division factor: 1
+#pragma optsize-
+CLKPR=0x80;
+CLKPR=0x01;
+#ifdef _OPTIMIZE_SIZE_
+#pragma optsize+
+#endif
+
+// Input/Output Ports initialization
+// Port A initialization
+// Func7=In Func6=In Func5=In Func4=In Func3=In Func2=In Func1=In Func0=In 
+// State7=T State6=T State5=T State4=T State3=T State2=T State1=T State0=T 
+PORTA=0x00;
+DDRA=0xFF;
+
+// Port B initialization
+// Func7=In Func6=In Func5=In Func4=In Func3=In Func2=In Func1=In Func0=In 
+// State7=T State6=T State5=T State4=T State3=T State2=T State1=T State0=T 
+PORTB=0x00;
+DDRB=0x00;
+
+// Port C initialization
+// Func7=In Func6=In Func5=In Func4=In Func3=In Func2=In Func1=In Func0=In 
+// State7=T State6=T State5=T State4=T State3=T State2=T State1=T State0=T 
+PORTC=0x00;
+DDRC=0xFF;
+
+// Port D initialization
+// Func7=In Func6=In Func5=In Func4=In Func3=In Func2=In Func1=In Func0=In 
+// State7=T State6=T State5=T State4=T State3=T State2=T State1=T State0=T 
+PORTD=0x00;
+DDRD=0xFF;
+
+// Port E initialization
+// Func7=In Func6=In Func5=Out Func4=Out Func3=In Func2=In Func1=In Func0=In 
+// State7=T State6=T State5=1 State4=0 State3=T State2=T State1=T State0=T 
+PORTE=0x20;
+DDRE=0x30;
+
+// Port F initialization
+// Func7=In Func6=In Func5=In Func4=In Func3=In Func2=In Func1=In Func0=In 
+// State7=T State6=T State5=T State4=T State3=T State2=T State1=T State0=T 
+PORTF=0x00;
+DDRF=0x00;
+
+// Port G initialization
+// Func5=In Func4=In Func3=In Func2=In Func1=In Func0=In 
+// State5=T State4=T State3=T State2=T State1=T State0=T 
+PORTG=0x00;
+DDRG=0x00;
+
+// Port H initialization
+// Func7=In Func6=In Func5=In Func4=In Func3=In Func2=In Func1=In Func0=In 
+// State7=T State6=T State5=T State4=T State3=T State2=T State1=T State0=T 
+PORTH=0x00;
+DDRH=0x00;
+
+// Port J initialization
+// Func7=In Func6=In Func5=In Func4=In Func3=In Func2=In Func1=In Func0=In 
+// State7=T State6=T State5=T State4=T State3=T State2=T State1=T State0=T 
+PORTJ=0x00;
+DDRJ=0x00;
+
+// Port K initialization
+// Func7=In Func6=In Func5=In Func4=In Func3=In Func2=In Func1=In Func0=In 
+// State7=T State6=T State5=T State4=T State3=T State2=T State1=T State0=T 
+PORTK=0x00;
+DDRK=0x00;
+
+// Port L initialization
+// Func7=In Func6=In Func5=In Func4=In Func3=In Func2=In Func1=In Func0=In 
+// State7=T State6=T State5=T State4=T State3=T State2=T State1=T State0=T 
+PORTL=0x00;
+DDRL=0x00;
+
+// Timer/Counter 1 initialization
+// Clock source: System Clock
+// Clock value: 7372.800 kHz
+// Mode: CTC top=OCR1A
+// OC1A output: Discon.
+// OC1B output: Discon.
+// OC1C output: Discon.
+// Noise Canceler: Off
+// Input Capture on Falling Edge
+// Timer1 Overflow Interrupt: On
+// Input Capture Interrupt: Off
+// Compare A Match Interrupt: On
+// Compare B Match Interrupt: Off
+// Compare C Match Interrupt: Off
+TCCR1A=0x00;
+TCCR1B=0x09;
+TCNT1H=0x00;
+TCNT1L=0x00;
+ICR1H=0x00;
+ICR1L=0x00;
+OCR1AH=0x4E;   //Para conmutación en 5 mseg 
+OCR1AL=0x20;
+OCR1BH=0x37;    
+OCR1BL=0x10;
+OCR1CH=0x00;
+OCR1CL=0x00;
+
+
+TCCR3A=0x00;
+TCCR3B=0x00;
+TCNT3H=0x00;
+TCNT3L=0x00;
+ICR3H=0x00;
+ICR3L=0x00;
+OCR3AH=0x00;
+OCR3AL=0x00;
+OCR3BH=0x00;
+OCR3BL=0x00;
+OCR3CH=0x00;
+OCR3CL=0x00;
+
+// Timer(s)/Counter(s) Interrupt(s) initialization
+TIMSK1=0x06;
+
+// USART0 initialization
+// Communication Parameters: 8 Data, 1 Stop, No Parity
+// USART0 Receiver: Off
+// USART0 Transmitter: On
+// USART0 Mode: Asynchronous
+// USART0 Baud Rate: 19200
+UCSR0A=0x00;
+UCSR0B=0x08;
+UCSR0C=0x06;
+UBRR0H=0x00;
+UBRR0L=0x33;
+
+// ADC initialization
+// ADC Clock frequency: 1000.000 kHz
+// ADC Voltage Reference: AREF pin
+// ADC Auto Trigger Source: ADC Stopped
+// Digital input buffers on ADC0: Off, ADC1: Off, ADC2: On, ADC3: On
+// ADC4: On, ADC5: On, ADC6: On, ADC7: On
+DIDR0=0x03;
+// Digital input buffers on ADC8: On, ADC9: On, ADC10: On, ADC11: On
+// ADC12: On, ADC13: On, ADC14: On, ADC15: On
+DIDR2=0x00;
+ADMUX=ADC_VREF_TYPE & 0xff;
+ADCSRA=0x84;
+
+
+
+// Specify the current font for displaying text
+glcd_init_data.font=font5x7;
+// No function is used for reading
+// image data from external memory
+glcd_init_data.readxmem=NULL;
+// No function is used for writing
+// image data to external memory
+glcd_init_data.writexmem=NULL;
+
+glcd_init(&glcd_init_data);
+
+// Global enable interrupts
+#asm("sei")
+
+
+}
